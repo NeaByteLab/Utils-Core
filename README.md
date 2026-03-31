@@ -13,9 +13,10 @@ Zero-dependency utilities for modern development across all runtimes.
 ## Features
 
 - **Zero dependencies** - No external packages required.
+- **Broadcast** - Global named-channel event bus.
+- **Sequential** - Async function queue with sequential execution guarantee.
 - **Signal** - Typed event emitter with error-isolated listeners.
 - **Store** - Reactive state container with reducer updates.
-- **Broadcast** - Global named-channel event bus.
 
 ## Installation
 
