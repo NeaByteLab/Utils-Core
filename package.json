@@ -1,0 +1,72 @@
+{
+  "name": "@neabyte/utils-core",
+  "version": "0.1.0",
+  "description": "Zero-dependency utilities for modern development across all runtimes",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "require": "./dist/index.cjs",
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "unbuild --minify",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "rm -rf dist && npm run build"
+  },
+  "keywords": [
+    "typescript",
+    "utilities",
+    "toolkit",
+    "reactive",
+    "signal",
+    "store",
+    "broadcast",
+    "zero-dependency",
+    "deno",
+    "nodejs",
+    "bun",
+    "esm",
+    "javascript",
+    "state-management",
+    "event-emitter",
+    "mini-utils",
+    "modular",
+    "lightweight",
+    "jsr",
+    "npm"
+  ],
+  "dependencies": {},
+  "devDependencies": {
+    "unbuild": "^3.6.1"
+  },
+  "author": {
+    "name": "NeaByteLab",
+    "email": "me@neabyte.com",
+    "url": "https://github.com/NeaByteLab"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NeaByteLab/Utils-Core.git"
+  },
+  "bugs": {
+    "url": "https://github.com/NeaByteLab/Utils-Core/issues"
+  },
+  "homepage": "https://github.com/NeaByteLab/Utils-Core#readme",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "files": [
+    "dist/**/*",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
