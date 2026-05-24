@@ -7,7 +7,6 @@ Reactive state container with change notifications and reducer-based updates.
 - [Quick Start](#quick-start)
 - [Creating Stores](#creating-stores)
 - [API Reference](#api-reference)
-- [Common Patterns](#common-patterns)
 
 ## Quick Start
 
@@ -22,13 +21,13 @@ store.subscribe(() => {
 })
 
 // Update state with reducer
-store.setState(prev => ({ ...prev, count: prev.count + 1 }))
 // State: { count: 1, user: null }
+store.setState(prev => ({ ...prev, count: prev.count + 1 }))
 ```
 
 ## Creating Stores
 
-### `createStore<T>(initialState: T, onChange?: OnChange<T>): Store<T>`
+### `createStore<T>(initialState: T, options?: StoreOptions<T>): Store<T>`
 
 Factory function that creates a new Store instance.
 
@@ -48,16 +47,72 @@ const userStore = createStore<UserState>({
 })
 ```
 
+### `StoreOptions<T>`
+
+| Option           | Type                            | Default     | Description                                                   |
+| ---------------- | ------------------------------- | ----------- | ------------------------------------------------------------- |
+| `isEqual`        | `(prev: T, next: T) => boolean` | `Object.is` | Custom equality check to determine if a state change occurred |
+| `onChange`       | `(change) => void`              | —           | Called with `{ newState, oldState }` whenever state changes   |
+| `onError`        | `(error, listener) => void`     | —           | Called when a subscriber throws during notification           |
+| `onDispose`      | `() => void`                    | —           | Called once after `dispose()` finishes tearing the store down |
+| `maxNotifyDepth` | `number`                        | `100`       | Maximum re-entrant notification depth before an error is thrown. Useful for detecting cyclic `setState` patterns. |
+
 ### With Change Callback
 
 Optional callback receives previous and new state on every change:
 
 ```typescript
-const store = createStore(0, ({ newState, oldState }) => {
-  console.log(`Changed: ${oldState} → ${newState}`)
+const store = createStore(0, {
+  onChange: ({ newState, oldState }) => {
+    console.log(`Changed: ${oldState} → ${newState}`)
+  }
 })
 
-store.setState(n => n + 1) // 'Changed: 0 → 1'
+// 'Changed: 0 → 1'
+store.setState(n => n + 1)
+```
+
+### With Custom Equality
+
+Use a custom comparator to short-circuit identical updates (e.g., deep equality):
+
+```typescript
+import { deepEqual } from 'some-deep-equal-lib'
+
+const store = createStore(
+  { items: [1, 2, 3] },
+  {
+    isEqual: (prev, next) => deepEqual(prev, next)
+  }
+)
+
+let count = 0
+store.subscribe(() => count++)
+
+// new object, but deep-equal
+store.setState(() => ({ items: [1, 2, 3] }))
+
+// 0 (no notification)
+console.log(count)
+```
+
+### With Error Handler
+
+By default, errors thrown by subscribers are silently caught. Provide `onError` to observe them:
+
+```typescript
+const store = createStore(0, {
+  onError: (error, listener) => {
+    console.error('Subscriber failed:', error)
+  }
+})
+
+store.subscribe(() => {
+  throw new Error('boom')
+})
+
+// logs: "Subscriber failed: Error: boom"
+store.setState(n => n + 1)
 ```
 
 ## API Reference
@@ -68,7 +123,9 @@ Read the current state value.
 
 ```typescript
 const store = createStore({ name: 'Nea' })
-console.log(store.getState()) // { name: 'Nea' }
+
+// { name: 'Nea' }
+console.log(store.getState())
 ```
 
 ### `setState(updater: (prev: T) => T): void`
@@ -89,11 +146,11 @@ store.setState(() => ({ count: 100 }))
 ```
 
 > [!NOTE]
-> If the returned value is identical to the previous (`Object.is`), no notifications are sent.
+> If the equality check (`Object.is` by default, or custom via `isEqual`) considers the new value identical to the previous, no notifications are sent.
 
-### `subscribe(callback): () => void`
+### `subscribe(listener): () => void`
 
-Register a callback to be invoked when state changes. Returns an unsubscribe function.
+Register a listener to be invoked when state changes. Returns an unsubscribe function.
 
 ```typescript
 const store = createStore(0)
@@ -102,7 +159,8 @@ const unsub = store.subscribe(() => {
   console.log('State changed to:', store.getState())
 })
 
-store.setState(n => n + 1) // 'State changed to: 1'
+// 'State changed to: 1'
+store.setState(n => n + 1)
 
 // Cleanup
 unsub()
@@ -111,111 +169,92 @@ unsub()
 > [!NOTE]
 > Subscribers receive no arguments. Read current state via `getState()` inside the callback.
 
-## Common Patterns
+### `reset(): void`
 
-### Immutable Updates
-
-Always return new objects to trigger notifications:
-
-```typescript
-const store = createStore({ items: ['a', 'b'] })
-
-// Correct: new array reference
-store.setState(prev => ({
-  items: [...prev.items, 'c']
-}))
-
-// Correct: new object with updated field
-store.setState(prev => ({
-  ...prev,
-  count: (prev.count ?? 0) + 1
-}))
-```
-
-### No Notification on Unchanged Value
-
-Store skips notifications when state hasn't changed:
-
-```typescript
-const store = createStore({ id: 1 })
-let count = 0
-
-store.subscribe(() => count++)
-
-store.setState(prev => prev) // same reference, no notification
-store.setState(prev => ({ ...prev })) // new object, notification sent
-
-console.log(count) // 1
-```
-
-### Nested State Updates
-
-Stores support updates from within subscribers:
-
-```typescript
-const store = createStore(0)
-const values: number[] = []
-
-store.subscribe(() => {
-  values.push(store.getState())
-  if (store.getState() === 1) {
-    store.setState(n => n + 1) // nested update
-  }
-})
-
-store.setState(n => n + 1) // triggers nested update
-console.log(values) // [1, 2]
-console.log(store.getState()) // 2
-```
-
-### Error Isolation
-
-One failing subscriber does not affect others:
+Reset the store to its initial state. Triggers notifications if the state changed.
 
 ```typescript
 const store = createStore(0)
 
-store.subscribe(() => {
-  throw new Error('subscriber A fails')
-})
+store.setState(n => n + 5)
 
-store.subscribe(() => {
-  console.log('subscriber B still runs')
-})
+// 5
+console.log(store.getState())
 
-store.setState(n => n + 1) // 'subscriber B still runs' printed
+// reset
+store.reset()
+
+// 0
+console.log(store.getState())
 ```
 
-### Multiple Subscribers
+### `batch(fn: () => void): void`
 
-All subscribers receive notifications:
+Group multiple `setState` calls into a single notification. Subscribers are notified once after `fn` completes, not after each individual update.
 
 ```typescript
-const store = createStore(0)
-const counts: [number, number, number] = [0, 0, 0]
+const store = createStore({ x: 0, y: 0 })
 
-store.subscribe(() => counts[0]++)
-store.subscribe(() => counts[1]++)
-store.subscribe(() => counts[2]++)
+let notifyCount = 0
+store.subscribe(() => notifyCount++)
 
-store.setState(n => n + 1)
-console.log(counts) // [1, 1, 1]
+store.batch(() => {
+  store.setState(prev => ({ ...prev, x: 10 }))
+  store.setState(prev => ({ ...prev, y: 20 }))
+})
+
+// 1 (not 2)
+console.log(notifyCount)
+
+// { x: 10, y: 20 }
+console.log(store.getState())
 ```
 
-### Memory Management
+> [!NOTE]
+> Nested `batch()` calls are supported. Notifications fire only when the outermost batch completes. If `fn` throws, pending notifications are still flushed before the error propagates.
 
-Always unsubscribe when components unmount or listeners are no longer needed:
+### `derive<R>(selector: (state: T) => R): { get: () => R; subscribe: (listener: () => void) => () => void }`
+
+Create a derived reactive value that updates only when the selected slice changes. Automatically subscribes to the parent store and unsubscribes when all derived listeners are removed.
 
 ```typescript
-const store = createStore({ data: null })
+const store = createStore({ count: 0, name: 'test' })
 
-function setup() {
-  const unsub = store.subscribe(() => {
-    render(store.getState())
-  })
+const countDerived = store.derive(state => state.count)
 
-  return () => {
-    unsub() // cleanup on unmount
-  }
-}
+let countNotify = 0
+countDerived.subscribe(() => countNotify++)
+
+// countNotify: 1
+store.setState(prev => ({ ...prev, count: 1 }))
+
+// countNotify: still 1 (name changed, count did not)
+store.setState(prev => ({ ...prev, name: 'updated' }))
+
+// 1
+console.log(countNotify)
+
+// 1
+console.log(countDerived.get())
+```
+
+> [!NOTE]
+> Derived values use `Object.is` for equality comparison by default. The parent store's `isEqual` option does not affect derived comparisons.
+
+### `dispose(): void`
+
+Permanently tear the store down. Removes every subscriber, blocks future calls to `getState()`, `setState()`, `subscribe()`, and `batch()`, and invokes the optional `onDispose` callback. Calling `dispose()` more than once is a safe no-op.
+
+```typescript
+const store = createStore(0, {
+  onDispose: () => console.log('store closed')
+})
+
+store.subscribe(() => {})
+
+// logs: "store closed"
+store.dispose()
+
+// Throws: 'Store has been disposed and cannot be accessed.'
+store.getState()
 ```

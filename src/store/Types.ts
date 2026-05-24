@@ -1,15 +1,33 @@
-/** Callback for state change notification. */
-export type Listener = () => void
-
-/** Change handler with previous and new state. */
-export type OnChange<T> = (args: { newState: T; oldState: T }) => void
-
-/** Reactive state container with subscribers. */
-export type Store<T> = {
-  /** Read current state value. */
-  getState: () => T
-  /** Update state with reducer function. */
-  setState: (updater: (prev: T) => T) => void
-  /** Register listener for changes. */
+export interface Derived<R> {
+  get: () => R
   subscribe: (listener: Listener) => () => void
 }
+
+export interface StateChange<T> {
+  newState: T
+  oldState: T
+}
+
+export interface Store<T> {
+  getState: () => T
+  setState: (updater: StateUpdater<T>) => void
+  subscribe: (listener: Listener) => () => void
+  reset: () => void
+  batch: (fn: () => void) => void
+  derive: <R>(selector: (state: T) => R) => Derived<R>
+  dispose: () => void
+}
+
+export interface StoreOptions<T> {
+  isEqual?: (prev: T, next: T) => boolean
+  onChange?: OnChange<T>
+  onDispose?: () => void
+  onError?: (error: unknown, listener: Listener) => void
+  maxNotifyDepth?: number
+}
+
+export type Listener = () => void
+
+export type OnChange<T> = (stateChange: StateChange<T>) => void
+
+export type StateUpdater<T> = (prev: T) => T
