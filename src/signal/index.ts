@@ -1,56 +1,100 @@
-import type * as Types from '@app/signal/Types.ts'
+import * as Shared from '@app/shared/index.ts'
+import type * as Types from '@app/signal/types.ts'
 
-/**
- * Event signal implementation.
- * @description Manages listener callbacks for event distribution.
- * @template Args - Tuple of event argument types.
- */
 class SignalImpl<Args extends unknown[] = []> implements Types.Signal<Args> {
-  /** Set of registered callback functions. */
+  private readonly maxEmitDepth: number
   private listenerSet = new Set<(...args: Args) => void>()
+  private originalListenerMap?: Map<(...args: Args) => void, (...args: Args) => void>
+  private emitDepth = 0
+  private warnedMaxListeners = false
 
-  /**
-   * Remove all listeners.
-   * @description Clears the internal callback set.
-   */
+  constructor(private options?: Types.SignalOptions) {
+    this.maxEmitDepth = options?.maxEmitDepth ?? Number.POSITIVE_INFINITY
+  }
+
   clear(): void {
     this.listenerSet.clear()
+    this.originalListenerMap?.clear()
+    this.warnedMaxListeners = false
   }
 
-  /**
-   * Emit event to listeners.
-   * @description Invokes all registered callbacks with arguments.
-   * @param eventArgs - Arguments passed to callbacks.
-   */
   emit(...eventArgs: Args): void {
-    for (const callback of this.listenerSet) {
-      try {
-        callback(...eventArgs)
-      } catch {
-        // Error isolation: one failing callback doesn't affect others
+    this.emitDepth++
+    try {
+      if (this.emitDepth > this.maxEmitDepth) {
+        throw new Error(
+          `Signal.emit() exceeded max re-entrancy depth of ${this.maxEmitDepth}. This may indicate a cyclic emit pattern.`
+        )
       }
+      this.dispatchListeners(...eventArgs)
+    } finally {
+      this.emitDepth--
     }
   }
 
-  /**
-   * Register event listener.
-   * @description Adds callback to the listener set.
-   * @param callback - Function invoked on emit.
-   * @returns Unsubscribe function.
-   */
-  subscribe(callback: (...args: Args) => void): () => void {
-    this.listenerSet.add(callback)
-    return () => {
-      this.listenerSet.delete(callback)
+  once(listener: (...args: Args) => void): () => void {
+    let hasFired = false
+    const wrappedListener = (...args: Args) => {
+      if (hasFired) {
+        return
+      }
+      hasFired = true
+      this.listenerSet.delete(wrappedListener)
+      listener(...args)
     }
+    if (this.options?.onError) {
+      ;(this.originalListenerMap ??= new Map()).set(wrappedListener, listener)
+    }
+    this.listenerSet.add(wrappedListener)
+    this.checkMaxListeners()
+    return () => {
+      hasFired = true
+      this.listenerSet.delete(wrappedListener)
+      this.originalListenerMap?.delete(wrappedListener)
+    }
+  }
+
+  subscribe(listener: (...args: Args) => void): () => void {
+    this.listenerSet.add(listener)
+    this.checkMaxListeners()
+    return () => {
+      this.listenerSet.delete(listener)
+      this.checkMaxListeners()
+    }
+  }
+
+  private checkMaxListeners(): void {
+    const maxListeners = this.options?.maxListeners
+    if (maxListeners === undefined || !Number.isFinite(maxListeners)) {
+      return
+    }
+    if (this.listenerSet.size > maxListeners && !this.warnedMaxListeners) {
+      this.warnedMaxListeners = true
+      this.options?.onMaxListenersExceeded?.(this.listenerSet.size, maxListeners)
+    }
+    if (this.listenerSet.size <= maxListeners) {
+      this.warnedMaxListeners = false
+    }
+  }
+
+  private dispatchListeners(...eventArgs: Args): void {
+    Shared.dispatchSafely(
+      this.listenerSet,
+      (listener) => listener(...eventArgs),
+      (error, listener) => {
+        if (this.options?.onError) {
+          const originalListener =
+            this.originalListenerMap?.get(listener as (...args: Args) => void) ??
+              listener
+          this.options.onError(error, originalListener as (...args: unknown[]) => void)
+        }
+      }
+    )
   }
 }
 
-/**
- * Create new signal instance.
- * @description Factory for event signal creation.
- * @returns Configured signal instance.
- */
-export function createSignal<Args extends unknown[] = []>(): Types.Signal<Args> {
-  return new SignalImpl<Args>()
+export function createSignal<Args extends unknown[] = []>(
+  options?: Types.SignalOptions
+): Types.Signal<Args> {
+  return new SignalImpl<Args>(options)
 }

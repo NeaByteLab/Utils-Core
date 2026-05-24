@@ -1,9 +1,13 @@
-/** Event signal for pub/sub communication. */
-export type Signal<Args extends unknown[] = []> = {
-  /** Register callback for events. */
+export interface Signal<Args extends unknown[] = []> {
   subscribe: (listener: (...args: Args) => void) => () => void
-  /** Notify all subscribed callbacks. */
+  once: (listener: (...args: Args) => void) => () => void
   emit: (...args: Args) => void
-  /** Remove all registered callbacks. */
   clear: () => void
+}
+
+export interface SignalOptions {
+  maxListeners?: number | undefined
+  maxEmitDepth?: number
+  onError?: (error: unknown, listener: (...args: unknown[]) => void) => void
+  onMaxListenersExceeded?: (count: number, maxListeners: number) => void
 }
