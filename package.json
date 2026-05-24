@@ -59,7 +59,7 @@
   },
   "homepage": "https://github.com/NeaByteLab/Utils-Core#readme",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=24.0.0"
   },
   "files": [
     "dist/**/*",
