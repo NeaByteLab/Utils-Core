@@ -1,21 +1,27 @@
-/** Sequential executor for async function queue. */
-export type Sequential<Args extends unknown[], ReturnType> = {
-  /** Execute function with sequential guarantee. */
-  execute: (...args: Args) => Promise<ReturnType>
-  /** Clear pending queue. */
-  clear: () => void
-  /** Get pending queue count. */
-  getPendingCount: () => number
+export interface QueueItem<Args extends unknown[], ReturnType> {
+  args: Args
+  resolve: (value: ReturnType) => void
+  reject: (reason?: unknown) => void
 }
 
-/** Queue item for sequential execution tracking. */
-export type QueueItem<Args extends unknown[], ReturnType> = {
-  /** Function arguments tuple */
-  args: Args
-  /** Promise resolve callback */
-  resolve: (value: ReturnType) => void
-  /** Promise reject callback */
-  reject: (reason?: unknown) => void
-  /** Execution context reference */
-  context: unknown
+export interface Sequential<Args extends unknown[], ReturnType> {
+  execute: (...args: Args) => Promise<ReturnType>
+  clear: () => void
+  getPendingCount: () => number
+  isProcessing: () => boolean
+  dispose: () => void
+  pause: () => void
+  resume: () => void
+  drain: () => Promise<void>
 }
+
+export interface SequentialOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
+  maxQueueSize?: number
+  concurrency?: number
+}
+
+export type AsyncFunction<Args extends unknown[], ReturnType> = (
+  ...args: Args
+) => Promise<ReturnType>

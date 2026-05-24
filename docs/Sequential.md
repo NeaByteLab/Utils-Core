@@ -7,7 +7,6 @@ Async function queue for sequential execution to prevent race conditions.
 - [Quick Start](#quick-start)
 - [Creating Sequential Executors](#creating-sequential-executors)
 - [API Reference](#api-reference)
-- [Common Patterns](#common-patterns)
 
 ## Quick Start
 
@@ -32,7 +31,7 @@ const results = await Promise.all([
 
 ## Creating Sequential Executors
 
-### `createSequential<Args, ReturnType>(targetFunction): Sequential<Args, ReturnType>`
+### `createSequential<Args, ReturnType>(targetFunction, options?): Sequential<Args, ReturnType>`
 
 Factory function that wraps an async function with sequential execution guarantee.
 
@@ -56,6 +55,61 @@ const fetchData = createSequential<[string], ApiResponse>(async url => {
 })
 ```
 
+### `SequentialOptions`
+
+| Option         | Type          | Default | Description                                                           |
+| -------------- | ------------- | ------- | --------------------------------------------------------------------- |
+| `signal`       | `AbortSignal` | —       | Abort the queue. Pending items are rejected and the queue is cleared. |
+| `timeoutMs`    | `number`      | —       | Per-task timeout. Tasks exceeding it reject with a timeout error.     |
+| `maxQueueSize` | `number`      | —       | Maximum queue depth. `execute()` rejects when full.                   |
+| `concurrency`  | `number`      | `1`     | Number of tasks that may run in parallel.                             |
+
+#### With Abort Signal
+
+```typescript
+const controller = new AbortController()
+const worker = createSequential(processJob, { signal: controller.signal })
+
+worker.execute(job1)
+worker.execute(job2)
+worker.execute(job3)
+
+// Cancel everything pending
+controller.abort()
+// Pending items reject, and new execute() calls after abort also reject
+```
+
+#### With Per-Task Timeout
+
+```typescript
+const fetcher = createSequential(
+  async (url: string) => {
+    const res = await fetch(url)
+    return res.json()
+  },
+  { timeoutMs: 5000 }
+)
+
+try {
+  await fetcher.execute('/slow-endpoint')
+} catch (err) {
+  // err.message: 'Sequential task timed out after 5000ms.'
+}
+```
+
+#### With Bounded Queue
+
+```typescript
+const writer = createSequential(saveToDisk, { maxQueueSize: 10 })
+
+for (let i = 0; i < 20; i++) {
+  // After the queue is full, additional execute() calls return rejected promises
+  writer.execute(`item-${i}`).catch(() => {
+    console.warn('Dropping item due to backpressure')
+  })
+}
+```
+
 ## API Reference
 
 ### `execute(...args): Promise<ReturnType>`
@@ -68,7 +122,8 @@ const fn = createSequential(async (n: number) => {
   return n * 2
 })
 
-const result = await fn.execute(5) // 10
+// 10
+const result = await fn.execute(5)
 ```
 
 > [!NOTE]
@@ -76,18 +131,24 @@ const result = await fn.execute(5) // 10
 
 ### `clear(): void`
 
-Remove all pending items from queue.
+Remove all pending items from queue and reject their promises.
 
 ```typescript
 const fn = createSequential(async (data: string) => {
   await saveToDisk(data)
 })
 
-fn.execute('A') // starts immediately
-fn.execute('B') // queued
-fn.execute('C') // queued
+// starts immediately
+fn.execute('A')
 
-fn.clear() // B and C removed
+// queued
+fn.execute('B')
+
+// queued
+fn.execute('C')
+
+// B and C removed and their promises rejected
+fn.clear()
 
 // Only A will execute
 ```
@@ -105,146 +166,89 @@ fn.execute('job-1')
 fn.execute('job-2')
 fn.execute('job-3')
 
-console.log(fn.getPendingCount()) // 2 (job-2 and job-3 queued)
+// 2 (job-2 and job-3 queued)
+console.log(fn.getPendingCount())
 ```
 
-## Common Patterns
+### `isProcessing(): boolean`
 
-### Database Write Queue
-
-Prevent concurrent write conflicts:
+Check if any tasks are currently executing.
 
 ```typescript
-const dbQueue = createSequential(async (user: User) => {
-  await db.users.insert(user)
-  return user.id
+const fn = createSequential(async () => {
+  await new Promise(r => setTimeout(r, 100))
 })
 
-// 100 concurrent requests → execute one-by-one
-await Promise.all(users.map(u => dbQueue.execute(u)))
+fn.execute()
+console.log(fn.isProcessing())
+// true
+
+await fn.execute()
+console.log(fn.isProcessing())
+// false
 ```
 
-### File Operations
+### `pause(): void`
 
-Sequential disk access prevents corruption:
+Pause processing new tasks. Already running tasks continue, but no new tasks start until `resume()` is called.
 
 ```typescript
-const fileWriter = createSequential(async (data: string) => {
-  await fs.appendFile('/var/log/app.log', data + '\n')
-})
+const fn = createSequential(async (id: string) => {
+  await processJob(id)
+}, { concurrency: 2 })
 
-// Log entries maintain order
-events.on('log', msg => fileWriter.execute(msg))
+fn.execute('job-1')
+fn.execute('job-2')
+fn.pause()
+
+// job-3 is queued but will not start until resume()
+fn.execute('job-3')
 ```
 
-### Rate-Limited API Calls
+### `resume(): void`
 
-Natural rate limiting through sequential execution:
+Resume processing paused tasks.
 
 ```typescript
-const apiCall = createSequential(async (endpoint: string) => {
-  const res = await fetch(apiBase + endpoint)
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status}`)
-  }
-  return res.json()
-})
+fn.pause()
+fn.execute('job-1')
+fn.execute('job-2')
 
-// Calls execute one at a time
-for (const endpoint of endpoints) {
-  apiCall.execute(endpoint)
-}
+// Tasks begin processing
+fn.resume()
 ```
 
-### Error Isolation
+### `dispose(): void`
 
-One failing execution does not stop the queue:
+Permanently dispose the executor. Rejects all pending tasks and prevents new `execute()` calls.
 
 ```typescript
-const fn = createSequential(async (id: string, shouldFail: boolean) => {
-  if (shouldFail) {
-    throw new Error(`Failed: ${id}`)
-  }
-  return `Success: ${id}`
+const fn = createSequential(async (id: string) => {
+  await processJob(id)
 })
 
-const results = await Promise.allSettled([
-  fn.execute('A', false), // succeeds
-  fn.execute('B', true), // fails
-  fn.execute('C', false) // still executes
-])
+fn.execute('job-1')
+fn.execute('job-2')
 
-// A and C succeed, B fails independently
+// Rejects job-2 and clears the queue
+fn.dispose()
+
+// Rejected: 'Sequential has been disposed and cannot accept new tasks.'
+await fn.execute('job-3')
 ```
 
-### Context Preservation
+### `drain(): Promise<void>`
 
-Maintain `this` context in class methods:
-
-```typescript
-class Database {
-  private writeQueue = createSequential(async (data: string) => {
-    // this refers to Database instance
-    await this.connection.query('INSERT INTO logs VALUES (?)', [data])
-  })
-
-  async log(data: string) {
-    return this.writeQueue.execute(data)
-  }
-}
-```
-
-### Queue Monitoring
-
-Track and control queue size:
+Return a promise that resolves once every running task has settled and the queue is empty. The promise resolves immediately when the executor is already idle. Calling `clear()`, `dispose()`, or aborting through the option `signal` also resolves any pending `drain()` promises.
 
 ```typescript
-const processor = createSequential(async (task: Task) => {
-  await heavyProcessing(task)
+const fn = createSequential(async (id: string) => {
+  await processJob(id)
 })
 
-// Monitor queue depth
-setInterval(() => {
-  const pending = processor.getPendingCount()
-  if (pending > 100) {
-    console.warn(`Queue backlog: ${pending} tasks`)
-  }
-}, 1000)
-```
+fn.execute('job-1')
+fn.execute('job-2')
 
-### Cleanup and Shutdown
-
-Clear pending work on shutdown:
-
-```typescript
-const worker = createSequential(async (job: Job) => {
-  await processJob(job)
-})
-
-// On shutdown signal
-process.on('SIGTERM', () => {
-  const pending = worker.getPendingCount()
-  console.log(`Dropping ${pending} pending jobs`)
-  worker.clear()
-  process.exit(0)
-})
-```
-
-### Stress Testing
-
-Sequential handles high queue volumes:
-
-```typescript
-const fn = createSequential(async (n: number) => {
-  await new Promise(r => setTimeout(r, 1))
-  return n
-})
-
-// 10000 rapid calls
-const promises = Array.from({ length: 10000 }, (_, i) => fn.execute(i))
-
-const results = await Promise.all(promises)
-console.log(results.length) // 10000
-console.log(results[0]) // 0
-console.log(results[9999]) // 9999
+await fn.drain()
+// Both tasks have completed by this point
 ```

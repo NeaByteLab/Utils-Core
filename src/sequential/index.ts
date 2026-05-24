@@ -1,105 +1,201 @@
-import type * as Types from '@app/sequential/Types.ts'
+import type * as Types from '@app/sequential/types.ts'
+import * as Shared from '@app/shared/index.ts'
+import { Async } from '@app/async/index.ts'
 
-/**
- * Sequential execution implementation.
- * @description Manages async function queue to prevent race conditions.
- * @template Args - Tuple of function argument types.
- * @template ReturnType - Function return type.
- */
 class SequentialImpl<Args extends unknown[], ReturnType> implements
   Types.Sequential<
     Args,
     ReturnType
   > {
-  /** Queue of pending executions. */
+  private readonly defaultMaxQueueSize = 10_000
   private itemQueue: Types.QueueItem<Args, ReturnType>[] = []
-  /** Current processing state. */
-  private isProcessing = false
-  /** Wrapped async function. */
-  private targetFunction: (...args: Args) => Promise<ReturnType>
+  private activeCount = 0
+  private isDisposed = false
+  private isPaused = false
+  private abortHandler: (() => void) | undefined
+  private drainResolvers = new Set<() => void>()
+  private activeTaskControllers = new Set<AbortController>()
 
-  /**
-   * Initialize sequential executor.
-   * @description Creates wrapper for async function.
-   * @param targetFunction - Async function to wrap.
-   */
-  constructor(targetFunction: (...args: Args) => Promise<ReturnType>) {
-    this.targetFunction = targetFunction
-  }
-
-  /**
-   * Clear pending queue.
-   * @description Removes queued items and rejects promises.
-   */
-  clear(): void {
-    while (this.itemQueue.length > 0) {
-      const item = this.itemQueue.shift()!
-      item.reject(new Error('Sequential execution cleared'))
+  constructor(
+    private targetFunction: Types.AsyncFunction<Args, ReturnType>,
+    private options?: Types.SequentialOptions
+  ) {
+    if (options?.maxQueueSize !== undefined) {
+      Shared.assertMaxQueueSize('maxQueueSize', options.maxQueueSize)
+    }
+    if (options?.timeoutMs !== undefined && Number.isFinite(options.timeoutMs)) {
+      Shared.assertTimeout('timeoutMs', options.timeoutMs)
+    }
+    if (options?.concurrency !== undefined) {
+      Shared.assertPositiveNumber('concurrency', options.concurrency, { allowZero: true })
+    }
+    if (options?.signal) {
+      this.abortHandler = () => {
+        this.clear()
+        this.cancelActiveTasks()
+      }
+      options.signal.addEventListener('abort', this.abortHandler, { once: true })
     }
   }
 
-  /**
-   * Execute function with sequential guarantee.
-   * @description Adds call to queue and processes in order.
-   * @param args - Arguments for function.
-   * @returns Promise resolving to function result.
-   */
+  get concurrency(): number {
+    return this.options?.concurrency ?? 1
+  }
+
+  clear(): void {
+    const pendingCount = this.itemQueue.length
+    for (const queueItem of this.itemQueue) {
+      queueItem.reject(
+        new Error(
+          `Sequential.execute() rejected because clear() was called while this task was still pending in the queue. ${pendingCount} pending tasks were dropped.`
+        )
+      )
+    }
+    this.itemQueue.length = 0
+    this.resolveDrains()
+  }
+
+  dispose(): void {
+    this.isDisposed = true
+    if (this.options?.signal && this.abortHandler) {
+      this.options.signal.removeEventListener('abort', this.abortHandler)
+    }
+    this.cancelActiveTasks()
+    this.clear()
+  }
+
+  drain(): Promise<void> {
+    if (this.activeCount === 0 && this.itemQueue.length === 0) {
+      return Promise.resolve()
+    }
+    const { promise, resolve } = Promise.withResolvers<void>()
+    this.drainResolvers.add(resolve)
+    return promise
+  }
+
   execute(...args: Args): Promise<ReturnType> {
+    if (this.isDisposed) {
+      return Promise.reject(new Error('Sequential has been disposed and cannot accept new tasks.'))
+    }
     return new Promise((resolve, reject) => {
-      this.itemQueue.push({ args, resolve, reject, context: this })
+      if (this.options?.signal?.aborted) {
+        reject(
+          new Error('Sequential.execute() aborted because the AbortSignal was already aborted.')
+        )
+        return
+      }
+      const maxQueueSize = this.options?.maxQueueSize ?? this.defaultMaxQueueSize
+      if (this.itemQueue.length >= maxQueueSize && maxQueueSize > 0) {
+        reject(
+          new Error(
+            `Sequential.execute() rejected because the queue is full (${maxQueueSize} max).`
+          )
+        )
+        return
+      }
+      this.itemQueue.push({ args, resolve, reject })
       void this.processQueue()
     })
   }
 
-  /**
-   * Get pending queue count.
-   * @description Returns number of queued executions.
-   * @returns - Queue size.
-   */
   getPendingCount(): number {
     return this.itemQueue.length
   }
 
-  /**
-   * Process queued executions.
-   * @description Executes queued items sequentially.
-   * @returns - Empty promise on completion.
-   */
-  private async processQueue(): Promise<void> {
-    if (this.isProcessing) {
+  isProcessing(): boolean {
+    return this.activeCount > 0
+  }
+
+  pause(): void {
+    this.isPaused = true
+  }
+
+  resume(): void {
+    this.isPaused = false
+    void this.processQueue()
+  }
+
+  private cancelActiveTasks(): void {
+    for (const activeController of this.activeTaskControllers) {
+      activeController.abort()
+    }
+    this.activeTaskControllers.clear()
+  }
+
+  private processQueue(): void {
+    if (this.isDisposed || this.isPaused || this.itemQueue.length === 0) {
       return
     }
-    if (this.itemQueue.length === 0) {
-      return
-    }
-    this.isProcessing = true
-    try {
-      while (this.itemQueue.length > 0) {
-        const item = this.itemQueue.shift()!
-        try {
-          const result = await this.targetFunction.apply(item.context, item.args)
-          item.resolve(result)
-        } catch (error) {
-          item.reject(error)
+    while (this.activeCount < this.concurrency && this.itemQueue.length > 0) {
+      if (this.options?.signal?.aborted) {
+        this.clear()
+        this.cancelActiveTasks()
+        return
+      }
+      if (this.isDisposed || this.isPaused) {
+        return
+      }
+      const queueItem = this.itemQueue.shift()!
+      this.activeCount++
+      const taskController = new AbortController()
+      this.activeTaskControllers.add(taskController)
+      this.runTask(queueItem.args, taskController.signal).then(
+        (taskResult) => {
+          this.activeTaskControllers.delete(taskController)
+          this.activeCount--
+          queueItem.resolve(taskResult)
+          void this.processQueue()
+          this.resolveDrains()
+        },
+        (taskError) => {
+          this.activeTaskControllers.delete(taskController)
+          this.activeCount--
+          queueItem.reject(taskError)
+          void this.processQueue()
+          this.resolveDrains()
         }
-      }
-    } finally {
-      this.isProcessing = false
-      if (this.itemQueue.length > 0) {
-        void this.processQueue()
-      }
+      )
     }
+  }
+
+  private resolveDrains(): void {
+    if (this.activeCount === 0 && this.itemQueue.length === 0) {
+      for (const drainResolver of this.drainResolvers) {
+        drainResolver()
+      }
+      this.drainResolvers.clear()
+    }
+  }
+
+  private runTask(args: Args, taskSignal: AbortSignal): Promise<ReturnType> {
+    const targetPromise = this.targetFunction(...args)
+    const timeoutMs = this.options?.timeoutMs
+    if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) {
+      return new Promise((resolve, reject) => {
+        targetPromise.then(resolve, reject)
+        const removeAbort = Shared.onAbortOnce(taskSignal, () => {
+          reject(new Error('Sequential task was cancelled.'))
+        })
+        targetPromise.then(removeAbort, removeAbort)
+      })
+    }
+    return Async.withTimeout(
+      targetPromise,
+      timeoutMs,
+      `Sequential task timed out after ${timeoutMs}ms.`,
+      { signal: taskSignal }
+    )
   }
 }
 
-/**
- * Create new sequential executor.
- * @description Factory for sequential execution wrapper.
- * @param targetFunction - Async function to wrap.
- * @returns Configured sequential executor.
- */
 export function createSequential<Args extends unknown[], ReturnType>(
-  targetFunction: (...args: Args) => Promise<ReturnType>
+  targetFunction: Types.AsyncFunction<Args, ReturnType>,
+  options?: Types.SequentialOptions
 ): Types.Sequential<Args, ReturnType> {
-  return new SequentialImpl(targetFunction)
+  if (typeof targetFunction !== 'function') {
+    throw new TypeError(
+      `createSequential() expected a function, but received ${typeof targetFunction}.`
+    )
+  }
+  return new SequentialImpl(targetFunction, options)
 }
