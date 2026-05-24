@@ -1,14 +1,22 @@
-import type * as SignalTypes from '@app/signal/Types.ts'
+import type * as SignalTypes from '@app/signal/types.ts'
 
-/** Generic signal reference for any event type. */
-export type AnySignal = SignalTypes.Signal<unknown[]>
-
-/** Global event bus with named channels. */
-export type Broadcast = {
-  /** Register callback for event channel. */
+export interface Broadcast {
   on: <Args extends unknown[] = []>(name: string, listener: (...args: Args) => void) => () => void
-  /** Emit event to channel subscribers. */
+  once: <Args extends unknown[] = []>(name: string, listener: (...args: Args) => void) => () => void
   emit: <Args extends unknown[] = []>(name: string, ...args: Args) => void
-  /** Remove all listeners from channel. */
   clear: (name: string) => void
+  clearAll: () => void
 }
+
+export interface BroadcastOptions {
+  maxListeners?: number
+  onError?: (error: unknown, listener: (...args: unknown[]) => void, eventName: string) => void
+  onMaxListenersExceeded?: (eventName: string, count: number, maxListeners: number) => void
+}
+
+export interface ChannelEntry {
+  signal: AnySignal
+  listenerCount: number
+}
+
+export type AnySignal = SignalTypes.Signal<unknown[]>
