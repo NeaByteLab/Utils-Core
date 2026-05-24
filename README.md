@@ -44,15 +44,9 @@ npm install @neabyte/utils-core
 ```html
 <script type="module">
   import {
-    Async,
-    createBroadcast,
-    Clone,
-    createSequential,
-    createSignal,
-    createStore,
-    Immutable,
-    Iterable
-  } from 'https://cdn.jsdelivr.net/npm/@neabyte/utils-core@0.1.0/dist/index.mjs'
+    createSignal
+    // ...
+  } from 'https://cdn.jsdelivr.net/npm/@neabyte/utils-core/dist/index.mjs'
 </script>
 ```
 
@@ -61,15 +55,9 @@ Or via [esm.sh](https://esm.sh):
 ```html
 <script type="module">
   import {
-    Async,
-    createBroadcast,
-    Clone,
-    createSequential,
-    createSignal,
-    createStore,
-    Immutable,
-    Iterable
-  } from 'https://esm.sh/@neabyte/utils-core@0.1.0'
+    createSignal
+    // ...
+  } from 'https://esm.sh/@neabyte/utils-core'
 </script>
 ```
 
@@ -79,7 +67,7 @@ Or via `importmap`:
 <script type="importmap">
   {
     "imports": {
-      "@neabyte/utils-core": "https://cdn.jsdelivr.net/npm/@neabyte/utils-core@0.1.0/dist/index.mjs"
+      "@neabyte/utils-core": "https://cdn.jsdelivr.net/npm/@neabyte/utils-core/dist/index.mjs"
     }
   }
 </script>
